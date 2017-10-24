@@ -2,67 +2,79 @@
 
 import express from 'express';
 import http from 'http';
-import socketIO from 'socket.io';
-import mongoose from 'mongoose';
 import colors from 'colors';
-import socketIoRedis from 'socket.io-redis';
+import proxy from 'express-http-proxy';
+import fetch from 'node-fetch';
 
-import saveFiles from './saveFiles.js';
+var upload = multer();
 
-const isRunningInDocker = process.env.DOCKER_DB;
+const isRunningInDocker = process.env.DOCKER_ENV;
 
 const app = express();
 const server = http.Server(app);
-const io = socketIO(server);
 const port = 8081;
-const host = isRunningInDocker ? 'redis' : 'localhost';
+const url = isRunningInDocker ? 'http://storage:8082' : 'https://localhost:8082';
+console.log(url);
 let shouldConnect = 0;
 
-io.adapter(socketIoRedis({ host, port: 6379 }));
-
-io.on('connection', (socket) => {
-  console.log('client connected', socket.id);
-  socket.on('upload', async function (blob) {
-    try {
-      const savedFiles = await saveFiles(blob);
-      console.log('sending io signal');
-      socket.emit('io', 'successfully chunk');
-    } catch (err) {
-      console.log(colors.red('I had an error:'), err);
-      socket.emit('error', err);
-    }
-  });
+app.post('/uploads', upload.array('files'), async (req, res) => {
+  console.log('files received in proxy', req.files);
+  const files = req.files;
+  console.log('\n\n\n', 'HEADERS', req.headers, '\n\n\n');
+  const {
+    'conetent-legnth': contentLength,
+    'content-type': contentType,
+    'accept-encoding': encoding,
+    cookie,
+    connection,
+    accept,
+  } = req.headers;
+  try {
+    const remoteResponse = await fetch(`${url}/storefiles`, {
+      headers: {
+        contentLength,
+        contentType,
+        cookie,
+        connection,
+        accept,
+      },
+      mode: 'no-cors',
+      credentials: 'include',
+      method: 'POST',
+      body: files,
+    });
+    // console.log(remoteResponse);
+    
+} catch (e) {
+  console.error(e);
+}
+  res.status(200).send('Got the goods');
 });
-
-app.post('/upload', (req, res) => {
-  const { type } = req;
-  console.log('POST request to the homepage');
-})
 
 server.listen(port, () => {
   console.log(`listening on :${port}`);
-  
 });
 
-/* If running in docker use the container name, otherwise, localhost */
-const url = isRunningInDocker ? 'mongo:27017' : 'localhost/test';
-connectToDb();
 
-function connectToDb() {
-  mongoose.connect(`mongodb://${url}`);
-}
+'use strict'
+const http = require('http')
+const url = require('url')
+const debug = require('debug')('stream-proxy')
 
-const db = mongoose.connection;
-db.on('error', (err) => {
-  console.error.bind(console, 'connection error:');
-  server.close(function() {
-    console.log(err);
-    setTimeout(() => {
-      console.log('reconnecting');
-      connectToDb()
-    }, 1000);
-  });
-});
-db.once('open', () => {
-  console.log('connected to mongodb');
-});
+http.createServer(function (clientReq, serverRes) {
+  debug('url', clientReq.url)
+  const options = url.parse(clientReq.url)
+  options.headers = clientReq.headers
+  options.method = clientReq.method
+  clientReq.pause()
+  const serverReq = http.request(options, function (remoteRes) {
+    remoteRes.pause()
+    serverRes.writeHeader(remoteRes.statusCode, remoteRes.headers)
+    remoteRes.pipe(serverRes)
+    remoteRes.resume()
+  })
+  clientReq.pipe(serverReq)
+  clientReq.resume()
+}).listen(8091, function () {
+  console.log('Listen on 8091')
+})
